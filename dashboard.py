@@ -1,41 +1,121 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-from sklearn.ensemble import IsolationForest
+import joblib
 
-st.set_page_config(page_title="XDR Threat Dashboard", layout="wide")
-st.title("🛡️ Automated Threat Detection Dashboard")
-st.write("Upload your processed Wazuh logs to scan for network anomalies.")
+st.set_page_config(
+    page_title="ML Threat Detection Dashboard",
+    layout="wide"
+)
 
+st.title("🛡️ ML-Based Threat Detection Dashboard")
+st.write(
+    "Analyze processed Wazuh security logs using a trained Isolation Forest model."
+)
 
-uploaded_file = st.file_uploader("Upload csv Log File", type=['csv'])
+# Load the trained ML model
+try:
+    model = joblib.load("isolation_forest_model.pkl")
+    st.success("Trained ML model loaded successfully.")
+except FileNotFoundError:
+    st.error(
+        "Model file not found. Make sure "
+        "'isolation_forest_model.pkl' is in the same folder as dashboard.py."
+    )
+    st.stop()
+
+# Upload processed logs
+uploaded_file = st.file_uploader(
+    "Upload Processed Wazuh Log CSV",
+    type=["csv"]
+)
 
 if uploaded_file is not None:
+
     df = pd.read_csv(uploaded_file)
-    st.write("**Raw Telemetry Preview**", df.head())
 
-    st.sidebar.header("Machine Learning Settings")
-    contamination = st.sidebar.slider("Anomaly Sensitivity (%)", 1, 10, 5) / 100.0
-    
-    if st.button("Detect Threats"):
-        features = ['Rule_Level'] 
+    st.subheader("Log Data Preview")
+    st.dataframe(df.head())
 
-        model = IsolationForest(contamination=contamination, random_state=42)
-        df['Anomaly_Score'] = model.fit_predict(df[features].fillna(0))
 
-        anomalies = df[df['Anomaly_Score'] == -1]
+    required_features = [
+    "Rule_Level",
+    "Is_High_Severity",
+    "Is_Login_Failure",
+    "Rule_Frequency",
+    "Agent_Event_Count"
+]
 
-        st.error(f"🚨 Detected {len(anomalies)} anomalies out of {len(df)} total logs!")
+    missing_features = [
+        feature
+        for feature in required_features
+        if feature not in df.columns
+    ]
 
-        fig = px.scatter(
-            df, 
-            x=df.index, 
-            y='Rule_Level', 
-            color=df['Anomaly_Score'].astype(str),
-            color_discrete_map={'-1': 'red', '1': 'blue'},
-            title="Threat Distribution (Red = Anomaly, Blue = Normal)"
+    if missing_features:
+        st.error(
+            f"Missing required features: {missing_features}"
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.stop()
 
-        st.write("**Identified Threat Details**")
-        st.dataframe(anomalies)
+    if st.button("Detect Threats"):
+
+        X = df[required_features].fillna(0)
+
+        # Use the trained model
+        predictions = model.predict(X)
+        scores = model.decision_function(X)
+
+        df["Anomaly_Label"] = predictions
+        df["Anomaly_Score"] = scores
+
+        anomalies = df[
+            df["Anomaly_Label"] == -1
+        ]
+
+        st.error(
+            f"🚨 Detected {len(anomalies):,} anomalies "
+            f"out of {len(df):,} logs."
+        )
+
+        col1, col2, col3 = st.columns(3)
+
+        col1.metric(
+            "Total Logs",
+            f"{len(df):,}"
+        )
+
+        col2.metric(
+            "Anomalies",
+            f"{len(anomalies):,}"
+        )
+
+        col3.metric(
+            "Anomaly Rate",
+            f"{len(anomalies) / len(df) * 100:.2f}%"
+        )
+
+        # Threat distribution
+        fig = px.scatter(
+            df,
+            x=df.index,
+            y="Rule_Level",
+            color=df["Anomaly_Label"].astype(str),
+            color_discrete_map={
+                "-1": "red",
+                "1": "blue"
+            },
+            title="Threat Distribution"
+        )
+
+        st.plotly_chart(
+            fig,
+            use_container_width=True
+        )
+
+        st.subheader("🚨 Identified Threats")
+
+        st.dataframe(
+            anomalies,
+            use_container_width=True
+        )
